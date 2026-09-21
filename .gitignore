@@ -1,0 +1,6 @@
+.aws/
+*.pem
+*.key
+credentials
+secret.json
+.env
