@@ -1,0 +1,23 @@
+{
+  "CallerReference": "cad-p3-32d6c4d4",
+  "Comment": "CAD Practice 3 - private S3 origin reached only through OAC",
+  "Enabled": true,
+  "DefaultRootObject": "index.html",
+  "Origins": { "Quantity": 1, "Items": [ {
+      "Id": "s3-cad-web-32d6c4d4",
+      "DomainName": "cad-web-32d6c4d4.s3.eu-north-1.amazonaws.com",
+      "OriginAccessControlId": "EB3Q03CDYOPL6",
+      "S3OriginConfig": { "OriginAccessIdentity": "" },
+      "ConnectionAttempts": 3, "ConnectionTimeout": 10
+  } ] },
+  "DefaultCacheBehavior": {
+    "TargetOriginId": "s3-cad-web-32d6c4d4",
+    "ViewerProtocolPolicy": "redirect-to-https",
+    "AllowedMethods": { "Quantity": 2, "Items": ["GET","HEAD"],
+      "CachedMethods": { "Quantity": 2, "Items": ["GET","HEAD"] } },
+    "Compress": true,
+    "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6"
+  },
+  "PriceClass": "PriceClass_100",
+  "HttpVersion": "http2and3"
+}

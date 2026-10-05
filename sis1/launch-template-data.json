@@ -1,0 +1,11 @@
+{
+  "ImageId": "ami-0c1b5617c7f8901d4",
+  "InstanceType": "t3.micro",
+  "IamInstanceProfile": { "Name": "cad-sis1-instance-profile" },
+  "SecurityGroupIds": ["sg-08c17c7b7dcd24214"],
+  "MetadataOptions": { "HttpTokens": "required", "HttpEndpoint": "enabled" },
+  "BlockDeviceMappings": [ { "DeviceName": "/dev/xvda",
+    "Ebs": { "VolumeSize": 8, "VolumeType": "gp3", "DeleteOnTermination": true, "Encrypted": true } } ],
+  "TagSpecifications": [ { "ResourceType": "instance",
+    "Tags": [ {"Key":"Name","Value":"cad-sis1-app"}, {"Key":"Project","Value":"CAD"} ] } ]
+}

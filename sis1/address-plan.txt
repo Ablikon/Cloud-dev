@@ -1,0 +1,11 @@
+VPC            10.0.0.0/16     65,536 addresses
+
+  public-1a    10.0.0.0/24     eu-north-1a     251 usable   load balancer, NAT gateway
+  public-1b    10.0.1.0/24     eu-north-1b     251 usable   load balancer
+                               <- 10.0.2.0 - 10.0.15.0 deliberately left free ->
+  app-1a       10.0.16.0/20    eu-north-1a   4,091 usable   EC2, the scaling tier
+  app-1b       10.0.32.0/20    eu-north-1b   4,091 usable   EC2
+  data-1a      10.0.48.0/24    eu-north-1a     251 usable   RDS (week 6)
+  data-1b      10.0.49.0/24    eu-north-1b     251 usable   RDS (week 6)
+
+AWS reserves 5 addresses in every subnet, which is why no figure is round.

@@ -1,0 +1,18 @@
+{
+  "Rules": [
+    {
+      "ID": "housekeeping-all-objects",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "" },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30, "NewerNoncurrentVersions": 3 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    },
+    {
+      "ID": "logs-to-ia-then-delete",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "logs/" },
+      "Transitions": [ { "Days": 30, "StorageClass": "STANDARD_IA" } ],
+      "Expiration": { "Days": 365 }
+    }
+  ]
+}
