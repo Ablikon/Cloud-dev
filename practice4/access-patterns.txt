@@ -1,0 +1,16 @@
+ACCESS PATTERNS, written before the key schema
+==============================================
+ #  What the application needs to ask            How it is served
+ --------------------------------------------------------------------------------
+ 1  "Show me this customer's orders,             Query on the base table
+     newest first."                              PK = CUSTOMER#<id>
+                                                 SK begins_with ORDER#, ScanIndexForward=false
+
+ 2  "Show me every order currently in            Query on GSI status-createdAt-index
+     status SHIPPED, newest first."              PK = status, SK = createdAt descending
+
+ 3  "Fetch one specific order."                  GetItem on PK + SK
+
+Neither pattern needs a Scan. A Scan reads every item in the table and then
+discards the ones that do not match, so its cost grows with the size of the
+table rather than with the size of the answer.

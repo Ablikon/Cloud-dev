@@ -66,3 +66,23 @@ builds on this bucket and distribution.
 ## Architecture diagrams
 
 `docs/fig-sis1.png` and `docs/fig-p3.png`.
+
+## Practice 4 — Multi-AZ RDS reached by name, and DynamoDB keyed from access patterns
+
+A PostgreSQL instance in two private subnets across two Availability Zones, through a
+DB subnet group, admitting connections only from the application's security group. The
+application resolves both the host and the password at runtime, so a forced Multi-AZ
+failover — which moved the endpoint from 10.1.16.45 to 10.1.17.253 in thirty seconds —
+required no change to it at all. The database was deleted afterwards; the brief is
+explicit that Multi-AZ is never in the free allowance.
+
+- `practice4/access-patterns.txt` — written before the key schema, because the keys
+  follow from the questions
+- `practice4/dynamodb-table.json` — composite key plus one GSI; every access pattern is
+  served by Query or GetItem, never by Scan
+- `practice4/app-connect.sh` — fetches the credential from Secrets Manager, connects by
+  endpoint name with TLS required, and creates a least-privilege database role
+- `practice4/policies/read-one-db-secret.json` — GetSecretValue on one ARN, not on `*`
+
+Measured: the same eight orders cost 0.5 RCU through the index and 2.0 RCU through a
+Scan, because a FilterExpression is applied after the read.
