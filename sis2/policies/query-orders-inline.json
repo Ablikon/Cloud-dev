@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "QueryTheOrdersTableAndItsIndexOnly",
+      "Effect": "Allow",
+      "Action": "dynamodb:Query",
+      "Resource": [ "arn:aws:dynamodb:eu-north-1:412004015750:table/cad-p4-orders", "arn:aws:dynamodb:eu-north-1:412004015750:table/cad-p4-orders/index/status-createdAt-index" ]
+    }
+  ]
+}

@@ -86,3 +86,25 @@ explicit that Multi-AZ is never in the free allowance.
 
 Measured: the same eight orders cost 0.5 RCU through the index and 2.0 RCU through a
 Scan, because a FilterExpression is applied after the read.
+
+## SIS 2 — the orders read path, reimplemented as a Lambda function
+
+One part of the project moved to Lambda: the DynamoDB queries that Practice 4 ran by
+hand. python3.13 on arm64, invoked through a function URL qualified to an alias, with
+`AWS_IAM` auth so an unsigned request is refused.
+
+The release mechanism is the submission. Version 1 was published and the alias `live`
+pointed at it; version 2 was published and the alias moved, and the same caller holding
+the same URL received the new code — `codeVersion` 1.0.0 became 1.1.0 and a new field
+appeared — without being told anything.
+
+The execution role is least-privilege in a way that can be proved rather than claimed:
+`dynamodb:Query` on two ARNs and nothing else. A probe deliberately attempting a Scan
+was refused with `AccessDeniedException ... not authorized to perform: dynamodb:Scan`.
+
+- `sis2/handler.py` — one function, two related routes; the trade-off is written at the
+  top of the file. Query only, structured JSON logs, never the raw event
+- `sis2/policies/query-orders-inline.json` — one action, two resources
+- `sis2/release.sh` — publish a version, move the alias
+
+Note: the function URL is omitted from this repository on purpose; it is in the report.
