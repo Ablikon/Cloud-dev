@@ -1,0 +1,101 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:eu-north-1:412004015750:task-definition/cad-p6-worker:1",
+    "containerDefinitions": [
+        {
+            "name": "worker",
+            "image": "412004015750.dkr.ecr.eu-north-1.amazonaws.com/cad-p6-worker:git-2adade4",
+            "cpu": 0,
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "hostPort": 8080,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "POLL_THREADS",
+                    "value": "2"
+                },
+                {
+                    "name": "CODE_VERSION",
+                    "value": "git-2adade4"
+                },
+                {
+                    "name": "QUEUE_URL",
+                    "value": "https://sqs.eu-north-1.amazonaws.com/412004015750/cad-p6-orders-q"
+                },
+                {
+                    "name": "PROCESSED_TABLE",
+                    "value": "cad-p5-processed"
+                },
+                {
+                    "name": "ACCOUNTS_TABLE",
+                    "value": "cad-p5-accounts"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/cad-p6-worker",
+                    "awslogs-region": "eu-north-1",
+                    "awslogs-stream-prefix": "worker"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "cad-p6-worker",
+    "taskRoleArn": "arn:aws:iam::412004015750:role/cad-p6-task-role",
+    "executionRoleArn": "arn:aws:iam::412004015750:role/cad-p6-execution-role",
+    "networkMode": "awsvpc",
+    "revision": 1,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "MANAGED_INSTANCES",
+        "FARGATE"
+    ],
+    "runtimePlatform": {
+        "cpuArchitecture": "ARM64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "registeredAt": "2026-11-24T16:21:37.760000+05:00",
+    "registeredBy": "arn:aws:iam::412004015750:root"
+}

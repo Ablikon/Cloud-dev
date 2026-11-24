@@ -47,6 +47,26 @@ nothing hands a container a batch.
 - `practice6/ecr-lifecycle-policy.json` — keep the five newest commit-tagged
   images, expire untagged layers after a day
 
+## Practice 7 — a push deploys SIS 3, with no access keys
+`.github/workflows/deploy-sis3.yml` lints both templates, runs the consumer's unit
+tests and checks the deploy script, then federates with OIDC to assume a role
+pinned to this repository and its `dev` GitHub Environment, builds and pushes an
+image tagged with the commit, deploys the stack through its CloudFormation
+template, and fails the run unless the service is actually running that commit's
+image.
+
+The trust policy pins the **immutable** subject form this repository issues
+(`repo:Ablikon@92432607/Cloud-dev@1379172936:environment:dev`), checked against
+the live value rather than copied from a tutorial. Permissions are split in two:
+the workflow may only ask CloudFormation to apply a template and pass it one
+named service role, which is the principal holding the breadth.
+
+> **The pipeline is live.** A push that touches `sis3/**` rebuilds the image and
+> redeploys the `cad-sis3-dev` environment, which costs about **$0.11 per hour**
+> (NAT gateway, load balancer, two Fargate tasks) until it is removed with
+> `cd sis3 && ./teardown.sh dev`. Commits that touch only documentation do not
+> trigger it.
+
 ## Notes
 No credentials are stored in this repository. The secret value lives only in
 AWS Secrets Manager; access keys live only in `~/.aws/credentials` on the
