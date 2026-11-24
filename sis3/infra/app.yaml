@@ -1,0 +1,584 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SIS 3, application stack: an OrderPlaced domain event on an EventBridge bus,
+  routed to an SQS queue with a dead-letter queue, drained by an idempotent
+  consumer that runs as an ECS Fargate service in private subnets behind an
+  Application Load Balancer. One stack per environment; every name is derived
+  from EnvName so a second copy can be deployed alongside the first.
+
+# ---------------------------------------------------------------------------
+# No secrets live in this template. The application needs none; if it did, the
+# value would be a Secrets Manager ARN passed as a parameter and resolved by the
+# container at run time through the task role, never a literal here. Parameters
+# below are all non-sensitive configuration.
+# ---------------------------------------------------------------------------
+
+Parameters:
+  EnvName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,12}$"
+    Description: Environment name; prefixes every resource name (dev, test, prod).
+  EcrStackName:
+    Type: String
+    Default: cad-sis3-ecr
+    Description: Name of the shared registry stack whose outputs this stack imports.
+  ImageTag:
+    Type: String
+    AllowedPattern: "^git-[0-9a-f]{7,40}$"
+    Description: >
+      Image tag to run, always git-<commit sha>. The pattern rejects "latest":
+      a moving tag makes it impossible to say which code a task is running.
+  DesiredCount:
+    Type: Number
+    Default: 2
+    MinValue: 0
+    MaxValue: 10
+    Description: Tasks to run. Two spreads the service across both AZs.
+  LogRetentionDays:
+    Type: Number
+    Default: 14
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 180, 365]
+    Description: CloudWatch Logs retention. Never "never expire".
+  MaxReceiveCount:
+    Type: Number
+    Default: 5
+    MinValue: 3
+    MaxValue: 20
+    Description: >
+      Receives before a message is moved to the dead-letter queue. The floor of
+      3 exists because 1 sends a message to the DLQ on its first transient error.
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+    AllowedPattern: "^10\\.\\d{1,3}\\.0\\.0/16$"
+    Description: Parameterised so two environments can be peered later if needed.
+  PollThreads:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Long-polling threads per task.
+
+Mappings:
+  # Subnet layout derived from the third octet, so changing VpcCidr moves
+  # everything together.
+  Subnets:
+    Public:  { One: "0", Two: "1" }
+    Private: { One: "10", Two: "11" }
+
+Conditions:
+  IsProd: !Equals [!Ref EnvName, "prod"]
+
+Resources:
+
+  # =========================================================================
+  # Network: two public subnets for the load balancer, two private ones for the
+  # tasks. Slide 24 of week 10 allows public subnets with public IPs as a lab
+  # shortcut "for Practice 6, not for SIS 3", so the tasks are private here and
+  # reach ECR and CloudWatch through a NAT gateway.
+  # =========================================================================
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-vpc" }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-igw" }]
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Sub
+        - "10.${Second}.${Third}.0/24"
+        - Second: !Select [1, !Split [".", !Ref VpcCidr]]
+          Third: !FindInMap [Subnets, Public, One]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-public-1" }]
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Sub
+        - "10.${Second}.${Third}.0/24"
+        - Second: !Select [1, !Split [".", !Ref VpcCidr]]
+          Third: !FindInMap [Subnets, Public, Two]
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-public-2" }]
+
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Sub
+        - "10.${Second}.${Third}.0/24"
+        - Second: !Select [1, !Split [".", !Ref VpcCidr]]
+          Third: !FindInMap [Subnets, Private, One]
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-private-1" }]
+
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Sub
+        - "10.${Second}.${Third}.0/24"
+        - Second: !Select [1, !Split [".", !Ref VpcCidr]]
+          Third: !FindInMap [Subnets, Private, Two]
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-private-2" }]
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-nat-eip" }]
+
+  # One NAT gateway, not one per AZ. A second costs another $32 a month and buys
+  # AZ-independent egress; for a course environment the saving wins, and the
+  # trade-off is written down rather than discovered in an invoice.
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetOne
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-nat" }]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-public-rt" }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetOneAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetOne, RouteTableId: !Ref PublicRouteTable }
+
+  PublicSubnetTwoAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetTwo, RouteTableId: !Ref PublicRouteTable }
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-private-rt" }]
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetOneAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetOne, RouteTableId: !Ref PrivateRouteTable }
+
+  PrivateSubnetTwoAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PrivateSubnetTwo, RouteTableId: !Ref PrivateRouteTable }
+
+  # Image layers are stored in S3. The gateway endpoint is free and takes that
+  # traffic off the NAT gateway's metered path ($0.045/GB).
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref PrivateRouteTable]
+
+  # =========================================================================
+  # Messaging
+  # =========================================================================
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "cad-sis3-${EnvName}-orders-dlq"
+      # 14 days, longer than the source queue. In standard queues the age of a
+      # message counts from the original send, so a DLQ with the same retention
+      # as its source lets messages expire before anyone looks at them.
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "cad-sis3-${EnvName}-orders"
+      # 60 s visibility against a worker that processes a message in well under a
+      # second; the container owns its own visibility window via ReceiveMessage.
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+
+  OrdersQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref OrdersQueue]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowThisRuleOnly
+            Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt OrdersQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt OrderPlacedRule.Arn
+
+  OrdersEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "cad-sis3-${EnvName}-orders"
+
+  OrderPlacedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "cad-sis3-${EnvName}-order-placed"
+      EventBusName: !Ref OrdersEventBus
+      Description: Routes OrderPlaced facts worth processing to the orders queue.
+      State: ENABLED
+      EventPattern:
+        source: [kbtu.shop.orders]
+        detail-type: [OrderPlaced]
+        detail:
+          country: [KZ]
+          total: [{ numeric: [">=", 100] }]
+      Targets:
+        - Id: orders-queue
+          Arn: !GetAtt OrdersQueue.Arn
+
+  # =========================================================================
+  # Data: the deduplication store and the table the consumer actually changes
+  # =========================================================================
+  ProcessedTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "cad-sis3-${EnvName}-processed"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: dedupKey, AttributeType: S }]
+      KeySchema: [{ AttributeName: dedupKey, KeyType: HASH }]
+      # The marker only has to outlive any possible redelivery, not forever.
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+
+  AccountsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "cad-sis3-${EnvName}-accounts"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: accountId, AttributeType: S }]
+      KeySchema: [{ AttributeName: accountId, KeyType: HASH }]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+
+  # =========================================================================
+  # Container: two roles, because the ECS agent and the application are not the
+  # same principal and must not share permissions.
+  # =========================================================================
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "cad-sis3-${EnvName}-execution"
+      Description: Used by the ECS agent to pull the image and open the log stream.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: pull-and-log
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"   # this call is not resource-scoped by ECR
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource:
+                  Fn::ImportValue: !Sub "${EcrStackName}-RepositoryArn"
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${WorkerLogGroup.Arn}:*"
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "cad-sis3-${EnvName}-task"
+      Description: What worker.py itself may call. No ECR, no log configuration.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: drain-and-apply
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DrainOwnQueueOnly
+                Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes]
+                Resource: !GetAtt OrdersQueue.Arn
+              - Sid: WriteDedupMarker
+                Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt ProcessedTable.Arn
+              - Sid: ApplyBalance
+                Effect: Allow
+                Action: dynamodb:UpdateItem
+                Resource: !GetAtt AccountsTable.Arn
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/cad-sis3-${EnvName}-worker"
+      RetentionInDays: !Ref LogRetentionDays
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "cad-sis3-${EnvName}"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "cad-sis3-${EnvName}-worker"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: "256"
+      Memory: "512"
+      RuntimePlatform:
+        # ARM is ~20% cheaper per vCPU-hour and the image is built natively.
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: worker
+          Essential: true
+          Image: !Sub
+            - "${Uri}:${ImageTag}"
+            - Uri:
+                Fn::ImportValue: !Sub "${EcrStackName}-RepositoryUri"
+          PortMappings: [{ ContainerPort: 8080, Protocol: tcp }]
+          Environment:
+            - { Name: QUEUE_URL, Value: !Ref OrdersQueue }
+            - { Name: PROCESSED_TABLE, Value: !Ref ProcessedTable }
+            - { Name: ACCOUNTS_TABLE, Value: !Ref AccountsTable }
+            - { Name: POLL_THREADS, Value: !Ref PollThreads }
+            - { Name: CODE_VERSION, Value: !Ref ImageTag }
+            - { Name: ENV_NAME, Value: !Ref EnvName }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "cad-sis3-${EnvName} load balancer: public HTTP in"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTP
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-alb-sg" }]
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub "cad-sis3-${EnvName} tasks: reachable only from the load balancer"
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: !Sub "cad-sis3-${EnvName}-task-sg" }]
+
+  # Written as a separate rule referencing the other group, not as a CIDR: the
+  # task tier's rule should say "the load balancer", not "an address range that
+  # currently happens to be the load balancer".
+  TaskIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Description: Container port, load balancer only
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "cad-sis3-${EnvName}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetOne, !Ref PublicSubnetTwo]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "cad-sis3-${EnvName}-tg"
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 8080
+      TargetType: ip
+      HealthCheckPath: /healthz
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - { Key: deregistration_delay.timeout_seconds, Value: "20" }
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions: [{ Type: forward, TargetGroupArn: !Ref TargetGroup }]
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: [Listener, PrivateDefaultRoute]   # no route, no image pull
+    Properties:
+      ServiceName: !Sub "cad-sis3-${EnvName}-worker"
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        # Without the circuit breaker a broken image retries until the deployment
+        # times out, leaving the stack in UPDATE_IN_PROGRESS for an hour.
+        DeploymentCircuitBreaker: { Enable: true, Rollback: true }
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: [!Ref PrivateSubnetOne, !Ref PrivateSubnetTwo]
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: worker
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+  # =========================================================================
+  # Alarms: every asynchronous arrow gets a dead-letter queue and an alarm.
+  # =========================================================================
+  DlqNotEmptyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "cad-sis3-${EnvName}-dlq-not-empty"
+      AlarmDescription: A message failed MaxReceiveCount times and was parked.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt DeadLetterQueue.QueueName }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  QueueBacklogAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "cad-sis3-${EnvName}-queue-backlog-age"
+      AlarmDescription: Oldest message older than five minutes; the service is behind.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions: [{ Name: QueueName, Value: !GetAtt OrdersQueue.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  UnhealthyTargetsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "cad-sis3-${EnvName}-unhealthy-targets"
+      AlarmDescription: At least one task is failing its health check.
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - { Name: LoadBalancer, Value: !GetAtt LoadBalancer.LoadBalancerFullName }
+        - { Name: TargetGroup, Value: !GetAtt TargetGroup.TargetGroupFullName }
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ServiceUrl:
+    Description: Public entry point for the service.
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  HealthUrl:
+    Description: What the target group checks, and what a smoke test should call.
+    Value: !Sub "http://${LoadBalancer.DNSName}/healthz"
+  EventBusName:
+    Description: Bus to publish OrderPlaced events to.
+    Value: !Ref OrdersEventBus
+  QueueUrl:
+    Description: Source queue drained by the service.
+    Value: !Ref OrdersQueue
+  DeadLetterQueueUrl:
+    Description: Where messages land after MaxReceiveCount failures.
+    Value: !Ref DeadLetterQueue
+  ClusterName:
+    Value: !Ref Cluster
+  ServiceName:
+    Value: !GetAtt Service.Name
+  TaskDefinitionArn:
+    Description: Revision currently deployed; the pipeline asserts on its image tag.
+    Value: !Ref TaskDefinition
+  ProcessedTableName:
+    Description: Deduplication store; dedupKey is the business order id.
+    Value: !Ref ProcessedTable
+  AccountsTableName:
+    Value: !Ref AccountsTable

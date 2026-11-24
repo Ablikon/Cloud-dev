@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  SIS 3, shared stack: the container registry. Deployed once per account and
+  left alone. It is separate from the application stack on purpose — a registry
+  holds state (the images every environment is running), so it must outlive any
+  single environment and must not be replaced when one is torn down.
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: cad-sis3-worker
+    Description: Name of the ECR repository shared by every environment.
+  KeepTaggedImages:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: How many commit-tagged images to keep before the oldest expire.
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    # Retained deliberately: deleting this stack must not delete the images that
+    # running services are still pulling from.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      # A tag that can be moved is not an audit trail. git-<sha> is written once.
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the ${KeepTaggedImages} newest commit-tagged images.",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["git-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${KeepTaggedImages}
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Untagged layers are build leftovers; expire after a day.",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 1
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+
+Outputs:
+  RepositoryUri:
+    Description: Pull/push URI, imported by every application stack.
+    Value: !GetAtt Repository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryUri"
+  RepositoryArn:
+    Description: ARN, imported by the application stack's execution role.
+    Value: !GetAtt Repository.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryArn"
