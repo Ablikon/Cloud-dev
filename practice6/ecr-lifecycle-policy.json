@@ -1,0 +1,9 @@
+{"rules":[
+ {"rulePriority":1,
+  "description":"Keep the 5 most recent commit-tagged images; older ones are already deployed or superseded.",
+  "selection":{"tagStatus":"tagged","tagPrefixList":["git-"],"countType":"imageCountMoreThan","countNumber":5},
+  "action":{"type":"expire"}},
+ {"rulePriority":2,
+  "description":"Untagged layers left by an overwritten manifest expire after a day.",
+  "selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},
+  "action":{"type":"expire"}}]}

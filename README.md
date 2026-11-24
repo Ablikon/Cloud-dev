@@ -22,6 +22,31 @@ application secret in Secrets Manager reachable only by assuming the role.
 - `policies/cad-secret-reader-trust.json` — trust policy naming `cad-dev-01` as the
   only principal permitted to assume the role
 
+## Practice 5 — a queue, a dead-letter queue and an idempotent consumer
+An `OrderPlaced` domain event on a custom EventBridge bus, routed by an event
+pattern to an SQS queue, drained by a Lambda consumer that is safe to run twice.
+The deduplication key is the business key (`orderId`), not the SQS `messageId`:
+a client retry produces a new message for the same order.
+
+- `practice5/handler.py` — the consumer; dedup marker and balance are written in
+  one `TransactWriteItems`, so a timeout cannot credit an account twice
+- `practice5/queue-attributes.json` — visibility timeout, retention and the
+  redrive policy (`maxReceiveCount` 5)
+- `practice5/policies/eventbridge-rule-pattern.json` — the routing pattern
+- `practice5/policies/queue-access-policy.json` — only this rule may send
+- `practice5/policies/consumer-least-privilege.json` — one queue, two tables,
+  one log group
+
+## Practice 6 — the same consumer as a container on Fargate
+The Practice 5 consumer rebuilt as a long-running service: an HTTP listener for
+the load balancer's health check and its own 20-second long-polling loop, since
+nothing hands a container a batch.
+
+- `practice6/app/` — `worker.py`, `requirements.txt` and a `Dockerfile` pinned to
+  a base-image digest rather than a moving tag
+- `practice6/ecr-lifecycle-policy.json` — keep the five newest commit-tagged
+  images, expire untagged layers after a day
+
 ## Notes
 No credentials are stored in this repository. The secret value lives only in
 AWS Secrets Manager; access keys live only in `~/.aws/credentials` on the

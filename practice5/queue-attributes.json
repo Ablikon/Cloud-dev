@@ -1,0 +1,6 @@
+{
+  "VisibilityTimeout": "200",
+  "MessageRetentionPeriod": "345600",
+  "ReceiveMessageWaitTimeSeconds": "20",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:eu-north-1:412004015750:cad-p5-orders-dlq\",\"maxReceiveCount\":5}"
+}

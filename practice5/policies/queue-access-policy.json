@@ -1,0 +1,19 @@
+{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Sid": "AllowEventBridgeRuleOnly",
+   "Effect": "Allow",
+   "Principal": {
+    "Service": "events.amazonaws.com"
+   },
+   "Action": "sqs:SendMessage",
+   "Resource": "arn:aws:sqs:eu-north-1:412004015750:cad-p5-orders-q",
+   "Condition": {
+    "ArnEquals": {
+     "aws:SourceArn": "arn:aws:events:eu-north-1:412004015750:rule/cad-p5-orders/cad-p5-order-placed"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,41 @@
+{
+ "Version": "2012-10-17",
+ "Statement": [
+  {
+   "Sid": "Logs",
+   "Effect": "Allow",
+   "Action": [
+    "logs:CreateLogGroup",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents"
+   ],
+   "Resource": "arn:aws:logs:eu-north-1:412004015750:log-group:/aws/lambda/cad-p5-consumer:*"
+  },
+  {
+   "Sid": "ConsumeSourceQueueOnly",
+   "Effect": "Allow",
+   "Action": [
+    "sqs:ReceiveMessage",
+    "sqs:DeleteMessage",
+    "sqs:GetQueueAttributes"
+   ],
+   "Resource": "arn:aws:sqs:eu-north-1:412004015750:cad-p5-orders-q"
+  },
+  {
+   "Sid": "IdempotencyMarker",
+   "Effect": "Allow",
+   "Action": [
+    "dynamodb:PutItem"
+   ],
+   "Resource": "arn:aws:dynamodb:eu-north-1:412004015750:table/cad-p5-processed"
+  },
+  {
+   "Sid": "ApplyBalance",
+   "Effect": "Allow",
+   "Action": [
+    "dynamodb:UpdateItem"
+   ],
+   "Resource": "arn:aws:dynamodb:eu-north-1:412004015750:table/cad-p5-accounts"
+  }
+ ]
+}

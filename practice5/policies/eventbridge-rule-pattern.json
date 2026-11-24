@@ -1,0 +1,8 @@
+{
+  "source": ["kbtu.shop.orders"],
+  "detail-type": ["OrderPlaced"],
+  "detail": {
+    "country": ["KZ"],
+    "total": [{ "numeric": [">=", 100] }]
+  }
+}
