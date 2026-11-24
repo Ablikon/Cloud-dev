@@ -33,6 +33,12 @@ sqs = boto3.client("sqs")
 TASK = os.environ.get("ECS_CONTAINER_METADATA_URI_V4", "").rsplit("/", 1)[-1][:12] or socket.gethostname()
 STOP = threading.Event()
 STATS = {"received": 0, "applied": 0, "duplicates": 0, "failed": 0, "startedAt": time.time()}
+# A receive_message that returns — even with no messages — proves the task can
+# still reach SQS with working credentials. An empty queue is healthy; a queue
+# we cannot read is not.
+LAST_OK_POLL = {"at": 0.0}
+POLL_STALE_AFTER = int(os.environ.get("POLL_STALE_AFTER", "90"))   # 3 long polls + slack
+START_GRACE = int(os.environ.get("START_GRACE", "45"))
 _lock = threading.Lock()
 
 
@@ -81,6 +87,9 @@ def poll_loop(n):
             emit(logging.ERROR, "poller.receive.failed", thread=n, error=type(e).__name__)
             STOP.wait(2)
             continue
+
+        with _lock:
+            LAST_OK_POLL["at"] = time.time()
 
         msgs = resp.get("Messages", [])
         if msgs:
@@ -140,13 +149,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/healthz"):
-            # Healthy means the pollers are alive. A target that answers 200
-            # while its pollers have died is the failure mode worth catching.
+            # Thread liveness alone is not health: a poller stuck in a retry
+            # loop on NoCredentialsError is alive and completely useless. So
+            # the check also asks when SQS was last reached successfully.
             alive = sum(1 for t in threading.enumerate() if t.name.startswith("poll-"))
-            ok = alive == POLL_THREADS and not STOP.is_set()
+            now = time.time()
+            with _lock:
+                last_ok = LAST_OK_POLL["at"]
+            age = None if last_ok == 0 else round(now - last_ok, 1)
+            warming = (now - STATS["startedAt"]) < START_GRACE and last_ok == 0
+            polling_ok = warming or (last_ok > 0 and (now - last_ok) < POLL_STALE_AFTER)
+            ok = alive == POLL_THREADS and polling_ok and not STOP.is_set()
             self._send(200 if ok else 503,
                        {"status": "ok" if ok else "unhealthy",
                         "pollers": alive, "expected": POLL_THREADS,
+                        "lastSuccessfulPollSecondsAgo": age,
+                        "staleAfter": POLL_STALE_AFTER,
+                        "warming": warming,
                         "task": TASK, "codeVersion": CODE_VERSION})
         elif self.path == "/":
             with _lock:
