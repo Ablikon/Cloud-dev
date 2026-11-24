@@ -1,0 +1,97 @@
+name: deploy-sis3
+
+# Continuous deployment to one environment: every push to main that touches the
+# SIS 3 directory is linted, tested, built and deployed. No access keys exist
+# anywhere in this repository or its secrets; the job federates with OIDC.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sis3/**"
+      - ".github/workflows/deploy-sis3.yml"
+  workflow_dispatch:
+
+concurrency:
+  # A second push while a deployment is running would race CloudFormation into
+  # "another update is in progress".
+  group: deploy-sis3-dev
+  cancel-in-progress: false
+
+permissions:
+  id-token: write      # required to request the OIDC token
+  contents: read       # everything else stays read-only
+
+jobs:
+  deploy:
+    # Native arm64 runner: the task definition is ARM64, so the image is built on
+    # the same architecture instead of under QEMU emulation. Free for public repos.
+    runs-on: ubuntu-24.04-arm
+    # The GitHub Environment is what the role's sub condition is pinned to, so
+    # only this job in this repository can assume it.
+    environment: dev
+    defaults:
+      run:
+        working-directory: sis3
+
+    steps:
+      - name: Check out the commit being deployed
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5
+
+      # ----- test & build gate: nothing reaches AWS until these pass -----
+      - name: Install linters
+        run: pip install --quiet cfn-lint boto3
+
+      - name: Lint the templates
+        run: cfn-lint infra/ecr.yaml infra/app.yaml
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Shell check on the deploy script
+        run: bash -n deploy.sh teardown.sh
+
+      # ----- only now do we touch the account -----
+      - name: Assume the deploy role via OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd   # v6
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-${{ github.run_id }}
+
+      - name: Show which identity the job is using
+        run: aws sts get-caller-identity
+
+      - name: Deploy
+        env:
+          CFN_ROLE_ARN: ${{ vars.CFN_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: ./deploy.sh dev
+
+      # ----- prove what was deployed, rather than assume it -----
+      - name: Assert the running task definition carries this commit
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          SHA="git-$(git rev-parse --short=7 HEAD)"
+          TD=$(aws ecs describe-services --cluster cad-sis3-dev \
+                 --services cad-sis3-dev-worker \
+                 --query 'services[0].taskDefinition' --output text)
+          IMAGE=$(aws ecs describe-task-definition --task-definition "$TD" \
+                 --query 'taskDefinition.containerDefinitions[0].image' --output text)
+          REVISION="${TD##*:}"
+          echo "commit       : ${SHA}"
+          echo "task def     : ${TD}"
+          echo "revision     : ${REVISION}"
+          echo "running image: ${IMAGE}"
+          [[ "${IMAGE}" == *":${SHA}" ]] || {
+            echo "::error::the service is running ${IMAGE}, not ${SHA}"; exit 1; }
+          {
+            echo "### Deployed"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`${SHA}\` |"
+            echo "| task definition revision | \`${REVISION}\` |"
+            echo "| image | \`${IMAGE}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -52,6 +52,25 @@ def bump(key, n=1):
         STATS[key] += n
 
 
+def parse_detail(body):
+    """Pull the business fields out of a message body, or raise.
+
+    Accepts both shapes the queue can carry: an EventBridge envelope, where the
+    payload sits under "detail", and a bare payload sent straight to the queue.
+    Raises for anything the consumer could not apply, so the caller can decide
+    between "retry this" and "park it".
+    """
+    envelope = json.loads(body)
+    detail = envelope.get("detail", envelope)
+    if not isinstance(detail, dict):
+        raise TypeError("detail is not an object")
+    for field in ("orderId", "account"):
+        if not detail.get(field):
+            raise KeyError(field)
+    float(detail["total"])          # raises for a missing or non-numeric total
+    return detail
+
+
 def apply_order(detail, message_id):
     """Same transaction as Practice 5: dedup marker and balance, or neither."""
     order_id = detail["orderId"]
@@ -99,10 +118,7 @@ def poll_loop(n):
         for m in msgs:
             mid = m["MessageId"]
             try:
-                env = json.loads(m["Body"])
-                detail = env.get("detail", env)
-                detail["orderId"], detail["account"]
-                float(detail["total"])
+                detail = parse_detail(m["Body"])
             except Exception as e:
                 # Unparseable: leave it. It will reappear and, after
                 # maxReceiveCount, the redrive policy moves it to the DLQ.

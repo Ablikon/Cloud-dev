@@ -4,6 +4,11 @@
 #   ./deploy.sh <env>        e.g. ./deploy.sh dev
 #
 # It is idempotent: run it twice and the second run is a no-op change set.
+#
+# Set CFN_ROLE_ARN to have CloudFormation act under a service role rather than
+# under the caller's own permissions. The pipeline always sets it, so a
+# compromised workflow can ask CloudFormation to apply a template but cannot
+# call the underlying APIs itself.
 set -euo pipefail
 
 ENV_NAME="${1:-}"
@@ -58,6 +63,7 @@ aws cloudformation deploy \
   --region "${REGION}" \
   --capabilities CAPABILITY_NAMED_IAM \
   --no-fail-on-empty-changeset \
+  ${CFN_ROLE_ARN:+--role-arn "${CFN_ROLE_ARN}"} \
   --parameter-overrides \
       "EnvName=${ENV_NAME}" \
       "ImageTag=${TAG}" \
