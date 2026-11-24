@@ -45,6 +45,10 @@ jobs:
         run: cfn-lint infra/ecr.yaml infra/app.yaml
 
       - name: Unit tests
+        # No bytecode: the next step refuses to build from a dirty tree, and
+        # __pycache__ directories would make it one.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: python -m unittest discover -s tests -v
 
       - name: Shell check on the deploy script

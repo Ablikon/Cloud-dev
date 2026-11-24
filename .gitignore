@@ -4,3 +4,10 @@
 credentials
 secret.json
 .env
+
+# Python bytecode. The deploy script refuses to build an image from a tree with
+# uncommitted changes; without this, the pipeline's own test step dirties the
+# tree that its build step then declines to build.
+__pycache__/
+*.py[cod]
+.pytest_cache/
